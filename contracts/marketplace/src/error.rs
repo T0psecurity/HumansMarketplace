@@ -94,6 +94,9 @@ pub enum ContractError {
     #[error("ids mismatch")]
     IdMismatch {},
 
+    #[error("collection mismatch")]    
+    CollectionMismatch{},
+
     #[error("auction cannot remove")]
     AuctionNotRemove {}
 }

@@ -8,3 +8,6 @@ pub mod sudo;
 
 pub use error::ContractError;
 pub use helpers::{ExpiryRange, ExpiryRangeError, MarketplaceContract};
+
+#[cfg(test)]
+mod unit_tests;

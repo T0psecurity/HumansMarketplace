@@ -148,6 +148,7 @@ pub fn token_owner_idx<T>(d: &TokenInfo<T>) -> Addr {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct Metadata {
     pub image_url: String,
+    pub minter: String
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

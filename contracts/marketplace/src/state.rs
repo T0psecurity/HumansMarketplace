@@ -64,6 +64,8 @@ pub struct Ask {
     pub expires_at: Timestamp,
     pub max_bid: Option<Uint128>,
     pub max_bidder: Option<Addr>,
+    pub bid_count: Uint128,
+    pub content_type: String
 }
 
 impl Order for Ask {
@@ -84,11 +86,14 @@ pub struct AskIndicies<'a> {
     pub collection: MultiIndex<'a, Addr, Ask, AskKey>,
     pub collection_price: MultiIndex<'a, (Addr, u128), Ask, AskKey>,
     pub seller: MultiIndex<'a, Addr, Ask, AskKey>,
+    pub bid_count: MultiIndex<'a, u128, Ask, AskKey>,
+    pub content_type: MultiIndex<'a, String, Ask, AskKey>,
+    pub price: MultiIndex<'a, u128, Ask, AskKey>
 }
 
 impl<'a> IndexList<Ask> for AskIndicies<'a> {
     fn get_indexes(&'_ self) -> Box<dyn Iterator<Item = &'_ dyn Index<Ask>> + '_> {
-        let v: Vec<&dyn Index<Ask>> = vec![&self.collection, &self.collection_price, &self.seller];
+        let v: Vec<&dyn Index<Ask>> = vec![&self.collection, &self.collection_price, &self.seller, &self.bid_count, &self.content_type, &self.price];
         Box::new(v.into_iter())
     }
 }
@@ -102,6 +107,9 @@ pub fn asks<'a>() -> IndexedMap<'a, AskKey, Ask, AskIndicies<'a>> {
             "asks__collection_price",
         ),
         seller: MultiIndex::new(|d: &Ask| d.seller.clone(), "asks", "asks__seller"),
+        bid_count: MultiIndex::new(|d: &Ask| d.bid_count.u128() , "asks", "bids_count"),
+        content_type: MultiIndex::new(|d: &Ask| d.content_type.clone() , "asks", "content_type"),
+        price: MultiIndex::new(|d: &Ask| d.price.u128() , "asks", "asks__price")
     };
     IndexedMap::new("asks", indexes)
 }
@@ -114,6 +122,7 @@ pub struct Bid {
     pub bidder: Addr,
     pub price: Uint128,
     pub active: bool,
+    pub time: Timestamp
 }
 
 impl Bid {
@@ -123,13 +132,15 @@ impl Bid {
         bidder: Addr,
         price: Uint128,
         active: bool,
+        time: Timestamp
     ) -> Self {
         Bid {
             collection,
             token_id,
             bidder,
             price,
-            active
+            active,
+            time
         }
     }
 }

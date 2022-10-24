@@ -105,6 +105,21 @@ pub struct AskOffset {
     pub token_id: TokenId,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct AskOffsetBidCount {
+    pub bid_count: Uint128,
+    pub token_id: TokenId,
+    pub collection: String
+}
+
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct AskOffsetSellPrice {
+    pub price: Uint128,
+    pub token_id: TokenId,
+    pub collection: String
+}
+
 impl AskOffset {
     pub fn new(price: Uint128, token_id: TokenId) -> Self {
         AskOffset { price, token_id }
@@ -204,6 +219,34 @@ pub enum QueryMsg {
         collection: Collection,
         start_before: Option<AskOffset>,
         limit: Option<u32>,
+    },
+    /// Get top asks which are based on the bids_count 
+    /// Return type: `AsksResponse`
+    AsksSortedByBidCount{
+        start_after: Option<AskOffsetBidCount>,
+        limit: Option<u32>
+    },
+    /// Get top asks which are based on the bids_count in reverse
+    /// Return type: `AsksResponse`
+    ReverseAsksSortedByBidCount{
+        start_after: Option<AskOffsetBidCount>,
+        limit: Option<u32>
+    },
+    //Get sorted asks by the price for all NFTs
+    AsksSortedBySellPrice{
+        start_after: Option<AskOffsetSellPrice>,
+        limit: Option<u32>
+    },
+    //Get sorted asks by the price for all NFTs(reverse)
+    ReverseSortedBySellPrice{
+        start_after: Option<AskOffsetSellPrice>,
+        limit: Option<u32>
+    },
+    //Get top asks which are base on the content-type
+    AsksSortedByContentType{
+      content_type: String,
+      start_after: Option<CollectionOffset>,
+      limit: Option<u32>  
     },
     /// Count of all asks
     /// Return type: `AskCountResponse`
@@ -367,7 +410,7 @@ pub struct AskHookMsg {
 
 impl AskHookMsg {
     pub fn new(ask: Ask) -> Self {
-        AskHookMsg { ask }
+        AskHookMsg { ask } 
     }
 
     /// serializes the message
@@ -450,4 +493,18 @@ pub enum CollectionBidExecuteMsg {
     CollectionBidCreatedHook(CollectionBidHookMsg),
     CollectionBidUpdatedHook(CollectionBidHookMsg),
     CollectionBidDeletedHook(CollectionBidHookMsg),
+}
+
+
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]
+pub struct NftInfoResponse<T> {
+    /// Universal resource identifier for this NFT
+    /// Should point to a JSON file that conforms to the ERC721
+    /// Metadata JSON Schema
+    pub token_uri: Option<String>,
+
+    pub content_type: String,
+    /// You can add any custom metadata here when you extend cw721-base
+    pub extension: T,
 }

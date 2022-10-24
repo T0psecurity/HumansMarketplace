@@ -1,6 +1,6 @@
 use crate::msg::{
     AskCountResponse, AskOffset, AskResponse, AsksResponse, BidOffset, BidResponse, Bidder,
-    BidsResponse, Collection, CollectionOffset, CollectionsResponse, ParamsResponse, QueryMsg,
+    BidsResponse, Collection, CollectionOffset, CollectionsResponse, ParamsResponse, QueryMsg, AskOffsetBidCount, AskOffsetSellPrice,
 };
 use crate::state::{
     ask_key, asks, bid_key, bids, BidKey, TokenId, ASK_HOOKS, BID_HOOKS, SALE_HOOKS, SUDO_PARAMS,
@@ -77,7 +77,41 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
         )?),
         QueryMsg::AskCount { collection } => {
             to_binary(&query_ask_count(deps, api.addr_validate(&collection)?)?)
+        },
+        QueryMsg::AsksSortedByBidCount { 
+            start_after, 
+            limit 
+        } => {
+            to_binary(&query_asks_by_bid_count(deps, start_after, limit )?)
         }
+        ,
+        QueryMsg::ReverseAsksSortedByBidCount { 
+            start_after, 
+            limit 
+        } => {
+            to_binary(&query_reverse_asks_by_bid_count(deps, start_after, limit)?)
+        }
+        ,
+        QueryMsg::AsksSortedByContentType { 
+            content_type, 
+            start_after, 
+            limit 
+        } => {
+            to_binary(&query_asks_by_content_type(deps, content_type, start_after, limit)?)
+        },
+        QueryMsg::AsksSortedBySellPrice { 
+            start_after, 
+            limit 
+        } => {
+            to_binary(&query_asks_by_sell_price(deps, start_after, limit )?)
+        }
+        ,
+        QueryMsg::ReverseSortedBySellPrice { 
+            start_after, 
+            limit 
+        } => {
+            to_binary(&reverse_query_asks_by_sell_price(deps, start_after, limit )?)
+        },
         QueryMsg::Bid {
             collection,
             token_id,
@@ -301,11 +335,134 @@ pub fn query_asks_by_seller(
     Ok(AsksResponse { asks })
 }
 
+
+
+pub fn query_asks_by_content_type(
+    deps: Deps,
+    content_type: String,
+    start_after: Option<CollectionOffset>,
+    limit: Option<u32>,
+) -> StdResult<AsksResponse> {
+    let limit = limit.unwrap_or(DEFAULT_QUERY_LIMIT).min(MAX_QUERY_LIMIT) as usize;
+
+    let start = if let Some(start) = start_after {
+        let collection = deps.api.addr_validate(&start.collection)?;
+        Some(Bound::exclusive(ask_key(&collection, &start.token_id)))
+    } else {
+        None
+    };
+
+    let asks = asks()
+        .idx
+        .content_type
+        .prefix(content_type)
+        .range(deps.storage, start, None, Order::Ascending)
+        .take(limit)
+        .map(|res| res.map(|item| item.1))
+        .collect::<StdResult<Vec<_>>>()?;
+
+    Ok(AsksResponse { asks })
+}
+
+
 pub fn query_ask(deps: Deps, collection: Addr, token_id: TokenId) -> StdResult<AskResponse> {
     let ask = asks().may_load(deps.storage, ask_key(&collection, &token_id))?;
 
     Ok(AskResponse { ask })
 }
+
+pub fn query_asks_by_bid_count(
+    deps: Deps, 
+    start_after: Option<AskOffsetBidCount>, 
+    limit: Option<u32> 
+) -> StdResult<AsksResponse> {
+    let limit = limit.unwrap_or(DEFAULT_QUERY_LIMIT).min(MAX_QUERY_LIMIT) as usize;
+
+    let start = start_after.map(|offset| {
+        Bound::exclusive((offset.bid_count.u128() , ask_key(&deps.api.addr_validate(&offset.collection).unwrap(), &offset.token_id)))
+    });
+
+    let asks = asks()
+        .idx
+        .bid_count
+        .range(deps.storage, start, None, Order::Descending)
+        .take(limit)
+        .map(|res| res.map(|item| item.1))
+        .collect::<StdResult<Vec<_>>>()?;
+
+    Ok(AsksResponse { asks })
+}
+
+
+pub fn query_reverse_asks_by_bid_count(
+    deps: Deps, 
+    start_after: Option<AskOffsetBidCount>, 
+    limit: Option<u32> 
+) -> StdResult<AsksResponse> {
+    let limit = limit.unwrap_or(DEFAULT_QUERY_LIMIT).min(MAX_QUERY_LIMIT) as usize;
+
+    let start = start_after.map(|offset| {
+        Bound::exclusive((offset.bid_count.u128() , ask_key(&deps.api.addr_validate(&offset.collection).unwrap(), &offset.token_id)))
+    });
+
+    let asks = asks()
+        .idx
+        .bid_count
+        .range(deps.storage, start, None, Order::Ascending)
+        .take(limit)
+        .map(|res| res.map(|item| item.1))
+        .collect::<StdResult<Vec<_>>>()?;
+
+    Ok(AsksResponse { asks })
+}
+
+pub fn query_asks_by_sell_price(
+    deps: Deps, 
+    start_after: Option<AskOffsetSellPrice>, 
+    limit: Option<u32> 
+) -> StdResult<AsksResponse> {
+    let limit = limit.unwrap_or(DEFAULT_QUERY_LIMIT).min(MAX_QUERY_LIMIT) as usize;
+
+    let start = start_after.map(|offset| {
+        Bound::exclusive((offset.price.u128() , ask_key(&deps.api.addr_validate(&offset.collection).unwrap(), &offset.token_id)))
+    });
+
+    let asks = asks()
+        .idx
+        .price
+        .range(deps.storage, start, None, Order::Descending)
+        .take(limit)
+        .map(|res| res.map(|item| item.1))
+        .collect::<StdResult<Vec<_>>>()?;
+
+    Ok(AsksResponse { asks })
+}
+
+
+pub fn reverse_query_asks_by_sell_price(
+    deps: Deps, 
+    start_after: Option<AskOffsetSellPrice>, 
+    limit: Option<u32> 
+) -> StdResult<AsksResponse> {
+    let limit = limit.unwrap_or(DEFAULT_QUERY_LIMIT).min(MAX_QUERY_LIMIT) as usize;
+
+    let start = start_after.map(|offset| {
+        Bound::exclusive((offset.price.u128() , ask_key(&deps.api.addr_validate(&offset.collection).unwrap(), &offset.token_id)))
+    });
+
+    let asks = asks()
+        .idx
+        .price
+        .range(deps.storage, start, None, Order::Ascending)
+        .take(limit)
+        .map(|res| res.map(|item| item.1))
+        .collect::<StdResult<Vec<_>>>()?;
+
+    Ok(AsksResponse { asks })
+}
+
+
+
 
 pub fn query_bid(
     deps: Deps,

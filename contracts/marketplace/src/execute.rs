@@ -2,7 +2,7 @@ use crate::error::ContractError;
 use crate::helpers::{map_validate, ExpiryRange};
 use crate::msg::{
     AskHookMsg, BidHookMsg, ExecuteMsg, HookAction, InstantiateMsg,
-    SaleHookMsg,
+    SaleHookMsg, NftInfoResponse
 };
 use crate::state::{
     ask_key, asks, bid_key, bids, Ask, Bid, Order, SaleType, SudoParams, TokenId, ASK_HOOKS, BID_HOOKS, SALE_HOOKS,
@@ -20,7 +20,7 @@ use cw2::set_contract_version;
 use cw721_base::ExecuteMsg as Cw721ExecuteMsg;
 use cw721_base::QueryMsg as Cw721QueryMsg;
 use cw721_base::CollectionInfoResponse;
-use cw721::{Cw721ReceiveMsg, NftInfoResponse};
+use cw721::{Cw721ReceiveMsg};
 use cw_storage_plus::Item;
 use cw_utils::{may_pay, must_pay, nonpayable, Duration};
 use schemars::JsonSchema;
@@ -67,12 +67,12 @@ pub fn instantiate(
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 
 pub struct AskInfo {
-    sale_type: SaleType,
-    collection: Addr,
-    token_id: TokenId,
-    price: Coin,
-    funds_recipient: Option<Addr>,
-    expires: u64,
+    pub sale_type: SaleType,
+    pub collection: Addr,
+    pub token_id: TokenId,
+    pub price: Coin,
+    pub funds_recipient: Option<Addr>,
+    pub expires: u64,
 }
 
 
@@ -148,6 +148,7 @@ pub fn execute_set_ask(
     rcv_msg: Cw721ReceiveMsg,
 ) -> Result<Response, ContractError> {
     let ask_info: AskInfo = from_binary(&rcv_msg.msg)?;
+    let collection_address = info.clone().sender;
     
     let AskInfo {
         sale_type,
@@ -156,10 +157,14 @@ pub fn execute_set_ask(
         price,
         funds_recipient,
         expires,
-    } = ask_info;
+    } = ask_info.clone();
 
     if rcv_msg.token_id != token_id {
         return Err(ContractError::IdMismatch{});
+    }
+
+    if ask_info.collection != collection_address {
+        return Err(ContractError::CollectionMismatch{} );
     }
 
     price_validate(deps.storage, &price)?;
@@ -173,13 +178,13 @@ pub fn execute_set_ask(
         return Err(ContractError::InvalidListingFee(listing_fee));
     }
 
-    let seller = info.sender;
     let now = env.block.time;
 
     let nft_info: NftInfoResponse<Metadata> = deps
         .querier
         .query_wasm_smart(collection.clone(), &Cw721QueryMsg::NftInfo { token_id: token_id.clone() })?;
 
+    let seller = deps.api.addr_validate(rcv_msg.sender.as_str())?;
     
     let ask = Ask {
         sale_type,
@@ -192,12 +197,15 @@ pub fn execute_set_ask(
         expires_at: now.plus_seconds(expires),
         max_bidder: Some(env.contract.address.clone()),
         max_bid: Some(params.min_price),
+        bid_count: Uint128::zero(),
+        content_type: nft_info.content_type
     };
     store_ask(deps.storage, &ask)?;
 
     let hook = prepare_ask_hook(deps.as_ref(), &ask, HookAction::Create)?;
 
     let event = Event::new("set-ask")
+        .add_attribute("action", "human_marketplace_set_ask")
         .add_attribute("collection", collection.to_string())
         .add_attribute("token_id", token_id.to_string())
         .add_attribute("seller", seller)
@@ -246,6 +254,7 @@ pub fn execute_remove_ask(
     let hook = prepare_ask_hook(deps.as_ref(), &ask, HookAction::Delete)?;
 
     let event = Event::new("remove-ask")
+        .add_attribute("action", "human_marketplace_remove_ask")
         .add_attribute("collection", collection.to_string())
         .add_attribute("token_id", token_id.to_string());
 
@@ -282,6 +291,7 @@ pub fn execute_update_ask_price(
     let hook = prepare_ask_hook(deps.as_ref(), &ask, HookAction::Update)?;
 
     let event = Event::new("update-ask")
+        .add_attribute("action", "human_marketplace_update_ask_price")
         .add_attribute("collection", collection.to_string())
         .add_attribute("token_id", token_id.to_string())
         .add_attribute("price", price.to_string());
@@ -312,11 +322,6 @@ pub fn execute_set_bid(
     let ask_key = ask_key(&collection, &token_id);
     let current_bid_key = bid_key(&collection, &token_id, &bidder);
 
-    let existing_bid = bids().may_load(deps.storage, current_bid_key.clone())?;
-    if existing_bid.is_some() {
-        bids().remove(deps.storage, current_bid_key)?;
-    }
-
     let existing_ask = asks().may_load(deps.storage, ask_key.clone())?;
 
     // if there is no ask
@@ -335,6 +340,19 @@ pub fn execute_set_bid(
     if ask.sale_type == SaleType::Auction && ask.price > bid_price {
         return Err(ContractError::PriceTooSmall(bid_price));
     }
+   
+
+    let existing_bid = bids().may_load(deps.storage, current_bid_key.clone())?;
+    if existing_bid.is_some() {
+        bids().remove(deps.storage, current_bid_key)?;
+    }
+    else{
+       if ask.sale_type == SaleType::Auction {
+            ask.bid_count = ask.bid_count + Uint128::new(1);
+            asks().save(deps.storage, ask_key.clone(), &ask)?;
+       }
+    }
+
     
     let save_bid = |store| -> StdResult<_> {
         let bid = Bid::new(
@@ -343,16 +361,20 @@ pub fn execute_set_bid(
             bidder.clone(),
             bid_price,
             true,
+            env.block.time
         );
         store_bid(store, &bid)?;
         Ok(Some(bid))
     };
+
+    let mut action = String::new();
 
     let bid = match ask.sale_type {
         SaleType::FixedPrice => {
             if ask.price != bid_price {
                 return Err(ContractError::InvalidPrice {});
             }
+            action = "human_marketplace_buy_fixed_price".to_string();
             asks().remove(deps.storage, ask_key)?;
             finalize_sale(
                 deps.as_ref(),
@@ -372,6 +394,8 @@ pub fn execute_set_bid(
             if bid_price <= ask.max_bid.unwrap() {
                 return Err(ContractError::InsufficientFundsSend {});
             }
+
+            action = "human_marketplace_set_bid".to_string();
 
             let max_bidder = ask.max_bidder.unwrap();
 
@@ -407,6 +431,7 @@ pub fn execute_set_bid(
     };
 
     let event = Event::new("set-bid")
+        .add_attribute("action", action)
         .add_attribute("collection", collection.to_string())
         .add_attribute("token_id", token_id.to_string())
         .add_attribute("bidder", bidder)
@@ -502,6 +527,7 @@ pub fn execute_accept_bid(
     }
 
     let event = Event::new("accept-bid")
+        .add_attribute("action", "human_marketplace_accept_bid")
         .add_attribute("collection", collection.to_string())
         .add_attribute("token_id", token_id.to_string())
         .add_attribute("buyer", max_bidder);
