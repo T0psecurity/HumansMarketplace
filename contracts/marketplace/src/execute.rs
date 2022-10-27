@@ -2,19 +2,18 @@ use crate::error::ContractError;
 use crate::helpers::{map_validate, ExpiryRange};
 use crate::msg::{
     AskHookMsg, BidHookMsg, ExecuteMsg, HookAction, InstantiateMsg,
-    SaleHookMsg, NftInfoResponse
+    SaleHookMsg, NftInfoResponse, Metadata
 };
 use crate::state::{
     ask_key, asks, bid_key, bids, Ask, Bid, Order, SaleType, SudoParams, TokenId, ASK_HOOKS, BID_HOOKS, SALE_HOOKS,
     SUDO_PARAMS
 };
-use cw721_base::Metadata;
 
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
     coin, to_binary, Addr, BankMsg, Coin, Decimal, Deps, DepsMut, Empty, Env, Event, MessageInfo,
-    Reply, StdError, StdResult, Storage, Timestamp, Uint128, WasmMsg, Response, SubMsg, from_binary
+    Reply, StdError, StdResult, Storage,  Uint128, WasmMsg, Response, SubMsg, from_binary
 };
 use cw2::set_contract_version;
 use cw721_base::ExecuteMsg as Cw721ExecuteMsg;
@@ -98,7 +97,7 @@ pub fn execute(
         ExecuteMsg::RemoveAsk {
             collection,
             token_id,
-        } => execute_remove_ask(deps, info, api.addr_validate(&collection)?, token_id),
+        } => execute_remove_ask(deps, env, info, api.addr_validate(&collection)?, token_id),
         ExecuteMsg::SetBid {
             collection,
             token_id,
@@ -204,24 +203,23 @@ pub fn execute_set_ask(
 
     let hook = prepare_ask_hook(deps.as_ref(), &ask, HookAction::Create)?;
 
-    let event = Event::new("set-ask")
-        .add_attribute("action", "human_marketplace_set_ask")
+    let res = Response::new()
+        .add_attribute("human_action", "human_marketplace_set_ask")
         .add_attribute("collection", collection.to_string())
         .add_attribute("token_id", token_id.to_string())
         .add_attribute("seller", seller)
-        .add_attribute("price", price.to_string())
-        .add_attribute("expires", expires.to_string());
+        .add_attribute("price", price.amount.to_string())
+        .add_attribute("expires", expires.to_string())
+        .add_attribute("time", env.block.time.to_string())
+        .add_submessages(hook);
 
-    let res = Response::new();
-
-
-    Ok(res
-        .add_submessages(hook).add_event(event))
+    Ok(res)
 }
 
 /// Removes the ask on a particular NFT
 pub fn execute_remove_ask(
     deps: DepsMut,
+    env: Env,
     info: MessageInfo,
     collection: Addr,
     token_id: TokenId,
@@ -233,11 +231,11 @@ pub fn execute_remove_ask(
 
     let owner = ask.clone().seller;
     only_owner_nft(&info, owner)?;
-
+    
     if ask.sale_type == SaleType::Auction {
         return Err(ContractError::AuctionNotRemove {});
     }
-
+    
     asks().remove(deps.storage, key)?;
 
     let cw721_transfer_msg = Cw721ExecuteMsg::<Metadata>::TransferNft {
@@ -253,14 +251,14 @@ pub fn execute_remove_ask(
 
     let hook = prepare_ask_hook(deps.as_ref(), &ask, HookAction::Delete)?;
 
-    let event = Event::new("remove-ask")
-        .add_attribute("action", "human_marketplace_remove_ask")
-        .add_attribute("collection", collection.to_string())
-        .add_attribute("token_id", token_id.to_string());
-
-    Ok(Response::new().add_event(event)
+    Ok(Response::new()
         .add_message(exec_cw721_transfer)
-        .add_submessages(hook))
+        .add_submessages(hook)
+        .add_attribute("human_action", "human_marketplace_remove_ask")
+        .add_attribute("collection", collection.to_string())
+        .add_attribute("token_id", token_id.to_string())
+        .add_attribute("time", env.block.time.to_string()))
+
 }
 
 /// Updates the ask price on a particular NFT
@@ -290,13 +288,15 @@ pub fn execute_update_ask_price(
 
     let hook = prepare_ask_hook(deps.as_ref(), &ask, HookAction::Update)?;
 
-    let event = Event::new("update-ask")
-        .add_attribute("action", "human_marketplace_update_ask_price")
+    let res = Response::new()
+        .add_attribute("human_action", "human_marketplace_update_ask_price")
         .add_attribute("collection", collection.to_string())
         .add_attribute("token_id", token_id.to_string())
-        .add_attribute("price", price.to_string());
+        .add_attribute("price", price.to_string())
+        .add_attribute("time", env.block.time.to_string())
+        .add_submessages(hook);
 
-    Ok(Response::new().add_event(event).add_submessages(hook))
+    Ok(res)
 }
 
 /// Places a bid on a listed or unlisted NFT. The bid is escrowed in the contract.
@@ -367,7 +367,7 @@ pub fn execute_set_bid(
         Ok(Some(bid))
     };
 
-    let mut action = String::new();
+    let action:String;
 
     let bid = match ask.sale_type {
         SaleType::FixedPrice => {
@@ -378,7 +378,7 @@ pub fn execute_set_bid(
             asks().remove(deps.storage, ask_key)?;
             finalize_sale(
                 deps.as_ref(),
-                ask,
+                ask.clone(),
                 bid_price,
                 bidder.clone(),
                 // finder,
@@ -430,14 +430,15 @@ pub fn execute_set_bid(
         vec![]
     };
 
-    let event = Event::new("set-bid")
-        .add_attribute("action", action)
+    Ok(res.add_submessages(hook)
+        .add_attribute("human_action", action)
         .add_attribute("collection", collection.to_string())
         .add_attribute("token_id", token_id.to_string())
-        .add_attribute("bidder", bidder)
-        .add_attribute("bid_price", bid_price.to_string());
+        .add_attribute("buyer", bidder)
+        .add_attribute("seller", ask.seller.to_string())
+        .add_attribute("price", bid_price.to_string())
+        .add_attribute("time", env.block.time.to_string()))
 
-    Ok(res.add_submessages(hook).add_event(event))
 }
 
 /// Removes a bid made by the bidder. Bidders can only remove their own bids
@@ -511,6 +512,15 @@ pub fn execute_accept_bid(
             // finder,
             &mut res,
         )?;
+
+        res = res.add_attribute("human_action", "human_marketplace_accept_bid")
+            .add_attribute("collection", collection.to_string())
+            .add_attribute("token_id", token_id.to_string())
+            .add_attribute("buyer", max_bidder)
+            .add_attribute("seller", info.sender.to_string())
+            .add_attribute("price", max_bid_price)
+            .add_attribute("time", env.block.time.to_string())
+
     } else {
         let cw721_transfer_msg = Cw721ExecuteMsg::<Metadata>::TransferNft {
             token_id: token_id.to_string(),
@@ -523,16 +533,10 @@ pub fn execute_accept_bid(
             funds: vec![],
         };
 
-        res.clone().add_message(exec_cw721_transfer);
+        res = res.add_message(exec_cw721_transfer);
     }
 
-    let event = Event::new("accept-bid")
-        .add_attribute("action", "human_marketplace_accept_bid")
-        .add_attribute("collection", collection.to_string())
-        .add_attribute("token_id", token_id.to_string())
-        .add_attribute("buyer", max_bidder);
-
-    Ok(res.add_event(event))
+    Ok(res)
 }
 /// Transfers funds and NFT, updates bid
 fn finalize_sale(
@@ -566,14 +570,6 @@ fn finalize_sale(
 
     res.messages
         .append(&mut prepare_sale_hook(deps, &ask, buyer.clone())?);
-
-    let event = Event::new("finalize-sale")
-        .add_attribute("collection", ask.collection.to_string())
-        .add_attribute("token_id", ask.token_id.to_string())
-        .add_attribute("seller", ask.seller.to_string())
-        .add_attribute("buyer", buyer.to_string())
-        .add_attribute("price", price.to_string());
-    res.events.push(event);
 
     Ok(())
 }

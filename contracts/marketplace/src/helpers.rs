@@ -1,5 +1,5 @@
 use crate::msg::ExecuteMsg;
-use cosmwasm_std::{to_binary, Addr, Api, BlockInfo, StdError, StdResult, Timestamp, WasmMsg, CosmosMsg};
+use cosmwasm_std::{to_binary, Addr, Api, StdError, StdResult, WasmMsg, CosmosMsg};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

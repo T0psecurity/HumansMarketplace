@@ -497,6 +497,7 @@ pub enum CollectionBidExecuteMsg {
 
 
 
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, JsonSchema, Debug)]
 pub struct NftInfoResponse<T> {
     /// Universal resource identifier for this NFT
@@ -505,6 +506,14 @@ pub struct NftInfoResponse<T> {
     pub token_uri: Option<String>,
 
     pub content_type: String,
+
+    pub created_time: u64,
     /// You can add any custom metadata here when you extend cw721-base
     pub extension: T,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct Metadata {
+    pub image_url: String,
+    pub minter: String
 }
