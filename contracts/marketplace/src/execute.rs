@@ -4,6 +4,7 @@ use crate::msg::{
     AskHookMsg, BidHookMsg, ExecuteMsg, HookAction, InstantiateMsg,
     SaleHookMsg, NftInfoResponse, Metadata
 };
+use crate::query::query_all_bids;
 use crate::state::{
     ask_key, asks, bid_key, bids, Ask, Bid, Order, SaleType, SudoParams, TokenId, ASK_HOOKS, BID_HOOKS, SALE_HOOKS,
     SUDO_PARAMS
@@ -189,7 +190,7 @@ pub fn execute_set_ask(
         sale_type,
         collection: collection.clone(),
         token_id: token_id.clone(),
-        img_url: nft_info.extension.image_url,
+        img_url: nft_info.extension.image_url, 
         seller: deps.api.addr_validate(rcv_msg.sender.as_str())?,
         price: price.amount,
         funds_recipient,
@@ -513,6 +514,11 @@ pub fn execute_accept_bid(
             &mut res,
         )?;
 
+        let current_bids = query_all_bids(deps.as_ref(), collection.clone(), token_id.clone())?;
+        for current_bid in current_bids.bids{
+            bids().remove(deps.storage, bid_key(&collection, &token_id, &current_bid.bidder))?;
+        }
+
         res = res.add_attribute("human_action", "human_marketplace_accept_bid")
             .add_attribute("collection", collection.to_string())
             .add_attribute("token_id", token_id.to_string())
@@ -593,7 +599,6 @@ fn payout(
     let collection_info: CollectionInfoResponse = deps
         .querier
         .query_wasm_smart(collection.clone(), &Cw721QueryMsg::GetCollectionState  {})?;
-
 
     match collection_info.royalty_info {
         // If token supports royalities, payout shares to royalty recipient
@@ -678,7 +683,7 @@ fn only_owner_nft(
 }
 
 /// Checks to enforce only privileged operators
-fn only_operator(store: &dyn Storage, info: &MessageInfo) -> Result<Addr, ContractError> {
+fn _only_operator(store: &dyn Storage, info: &MessageInfo) -> Result<Addr, ContractError> {
     let params = SUDO_PARAMS.load(store)?;
     if !params
         .operators

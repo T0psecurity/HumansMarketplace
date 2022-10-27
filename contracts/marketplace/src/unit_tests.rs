@@ -2,14 +2,14 @@ use crate::execute::AskInfo;
 #[cfg(test)]
 use crate::execute::{execute, instantiate};
 use crate::msg::{ExecuteMsg, InstantiateMsg, };
-use crate::query::{ query_ask,  query_bids, query_asks_by_bid_count};
+use crate::query::{ query_ask,  query_bids, query_asks_by_bid_count, query_all_bids};
 use crate::state:: SaleType;
 use crate::helpers::ExpiryRange;
 
 use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
-use cosmwasm_std::{coin, coins, Addr, DepsMut, Timestamp, Uint128,to_binary, Env, Decimal, CosmosMsg, WasmMsg, StdResult, Response, Coin, BankMsg};
+use cosmwasm_std::{ Addr, DepsMut,Uint128,to_binary,CosmosMsg, WasmMsg,  Coin, BankMsg};
 use cw721::{Cw721ReceiveMsg,Cw721ExecuteMsg};
-use cw20::{Cw20ReceiveMsg, Cw20ExecuteMsg};
+
 
 fn setup_contract(deps: DepsMut){
    let instantiate_msg = InstantiateMsg {
@@ -212,4 +212,127 @@ fn test_ask(){
 
   let result = query_asks_by_bid_count(deps.as_ref(), None, Some(20)).unwrap();
   println!("{:?}",result)
+}
+
+#[test]
+fn test_accept_bid_without_bid(){
+  let mut deps = mock_dependencies();
+  let mut env = mock_env();
+  setup_contract(deps.as_mut());
+
+  let sell_msg = AskInfo{
+    sale_type: SaleType::Auction,
+    collection: Addr::unchecked("collection1".to_string()),
+    token_id: "Test.1".to_string(),
+    price: Coin { denom: "uheart".to_string(), amount: Uint128::new(300) },
+    funds_recipient: None,
+    expires: 300,
+  };
+
+  let info = mock_info("collection1", &[]);
+  let msg = ExecuteMsg::ReceiveNft(Cw721ReceiveMsg{
+      sender: "seller1".to_string(),
+      token_id: "Test.1".to_string(),
+      msg:to_binary(&sell_msg).unwrap()
+  });
+  execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+
+  env.block.time = env.block.time.plus_seconds(350);
+
+  let info = mock_info("seller1", &[]);
+  let msg = ExecuteMsg::AcceptBid  { collection: "collection1".to_string(), token_id: "Test.1".to_string() };
+  let res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+
+  assert_eq!(res.messages.len(), 1);
+  assert_eq!(res.messages[0].msg, CosmosMsg::Wasm(WasmMsg::Execute { 
+    contract_addr: "collection1".to_string(), 
+    msg: to_binary(&Cw721ExecuteMsg::TransferNft { 
+      recipient: "seller1".to_string(), 
+      token_id: "Test.1".to_string() 
+    }).unwrap(), 
+    funds: vec![] 
+  }));
+}
+
+
+
+
+#[test]
+fn test_remove_bids(){
+  let mut deps = mock_dependencies();
+  let mut env = mock_env();
+  setup_contract(deps.as_mut());
+
+  let sell_msg = AskInfo{
+    sale_type: SaleType::Auction,
+    collection: Addr::unchecked("collection1".to_string()),
+    token_id: "Test.1".to_string(),
+    price: Coin { denom: "uheart".to_string(), amount: Uint128::new(300) },
+    funds_recipient: None,
+    expires: 300,
+  };
+
+  let info = mock_info("collection1", &[]);
+  let msg = ExecuteMsg::ReceiveNft(Cw721ReceiveMsg{
+      sender: "seller1".to_string(),
+      token_id: "Test.1".to_string(),
+      msg:to_binary(&sell_msg).unwrap()
+  });
+  execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+ 
+  let info = mock_info("bider1", &[Coin{
+      denom: "uheart".to_string(),
+      amount: Uint128::new(350)
+  }]);
+  let msg = ExecuteMsg::SetBid { collection: "collection1".to_string(), token_id: "Test.1".to_string() };
+  execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+
+  let info = mock_info("bider2", &[Coin{
+      denom: "uheart".to_string(),
+      amount: Uint128::new(400)
+  }]);
+  let msg = ExecuteMsg::SetBid { collection: "collection1".to_string(), token_id: "Test.1".to_string() };
+  let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+  println!("bid message length compare");
+  assert_eq!(res.messages.len(),1);
+
+  let bids = query_bids(deps.as_ref(), Addr::unchecked("collection1") , "Test.1".to_string(), None, Some(1)).unwrap();
+  println!("bids by pagination {:?}",bids);
+
+  let all_bids = query_all_bids(deps.as_ref(), Addr::unchecked("collection1") , "Test.1".to_string()).unwrap();
+  println!("all bids {:?}", all_bids);
+
+  env.block.time = env.block.time.plus_seconds(350);
+
+  let info = mock_info("seller1", &[]);
+  let msg = ExecuteMsg::AcceptBid { collection: "collection1".to_string(), token_id: "Test.1".to_string() };
+  let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+
+  println!("compare bids messges length{:?}", res.messages.len());
+  assert_eq!(res.messages.len(), 4);
+  assert_eq!(res.messages[0].msg, CosmosMsg::Bank(BankMsg::Send{
+    to_address: "owner1".to_string(),
+    amount: vec![Coin{
+      denom: "uheart".to_string(),
+      amount: Uint128::new(40)
+    }]
+  }));
+  assert_eq!(res.messages[1].msg, CosmosMsg::Bank(BankMsg::Send{
+    to_address: "seller1".to_string(),
+    amount: vec![Coin{
+      denom: "uheart".to_string(),
+      amount: Uint128::new(360)
+    }]
+  }));
+  assert_eq!(res.messages[2].msg, CosmosMsg::Wasm(WasmMsg::Execute{
+    contract_addr: "collection1".to_string(),
+    msg: to_binary(&Cw721ExecuteMsg::TransferNft{
+      recipient: "bider2".to_string(),
+      token_id: "Test.1".to_string()
+    }).unwrap(),
+    funds: vec![]
+  }));
+
+  let all_bids = query_all_bids(deps.as_ref(), Addr::unchecked("collection1") , "Test.1".to_string()).unwrap();
+  println!("all bids after accept the max bid {:?}", all_bids);
 }

@@ -528,6 +528,23 @@ pub fn query_bids(
     Ok(BidsResponse { bids })
 }
 
+pub fn query_all_bids(
+    deps: Deps,
+    collection: Addr,
+    token_id: TokenId,
+) -> StdResult<BidsResponse> {
+    
+    let bids = bids()
+        .idx
+        .collection_token_id
+        .prefix((collection, token_id))
+        .range(deps.storage, None, None, Order::Ascending)
+        .map(|item| item.map(|(_, b)| b))
+        .collect::<StdResult<Vec<_>>>()?;
+
+    Ok(BidsResponse { bids })
+}
+
 pub fn query_bids_sorted_by_price(
     deps: Deps,
     collection: Addr,
