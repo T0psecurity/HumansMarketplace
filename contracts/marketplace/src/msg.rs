@@ -6,6 +6,12 @@ use cosmwasm_std::{to_binary, Addr, Binary, Coin, StdResult, Uint128};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use cw721::Cw721ReceiveMsg;
+
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct MigrateMsg {}
+
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
 pub struct InstantiateMsg {
     /// Fair Burn fee for winning bids
@@ -28,6 +34,8 @@ pub struct InstantiateMsg {
     pub min_price: Uint128,
     /// Listing fee to reduce spam
     pub listing_fee: Uint128,
+
+    pub create_collection_address: String
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
@@ -119,6 +127,15 @@ pub struct AskOffsetSellPrice {
     pub token_id: TokenId,
     pub collection: String
 }
+
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+pub struct AsksOffsetExpiration {
+    pub token_id: TokenId,
+    pub collection: String,
+    pub time: u64
+}
+
 
 impl AskOffset {
     pub fn new(price: Uint128, token_id: TokenId) -> Self {
@@ -226,15 +243,13 @@ pub enum QueryMsg {
         start_after: Option<AskOffsetBidCount>,
         limit: Option<u32>
     },
-    /// Get top asks which are based on the bids_count in reverse
-    /// Return type: `AsksResponse`
-    ReverseAsksSortedByBidCount{
-        start_after: Option<AskOffsetBidCount>,
-        limit: Option<u32>
-    },
     //Get sorted asks by the price for all NFTs
     AsksSortedBySellPrice{
         start_after: Option<AskOffsetSellPrice>,
+        limit: Option<u32>
+    },
+    //Asks sorted by the expiration
+    AsksSortedByExpiration{
         limit: Option<u32>
     },
     //Get sorted asks by the price for all NFTs(reverse)
@@ -306,6 +321,16 @@ pub enum QueryMsg {
     /// Get the config for the contract
     /// Return type: `ParamsResponse`
     Params {},
+}
+
+
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CreateCollectionQueryMsg {
+    /// List of collections that have asks on them
+    /// Return type: `CollectionsResponse`
+      CheckCollection{address: String}
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]

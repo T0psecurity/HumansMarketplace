@@ -2,11 +2,11 @@ use crate::error::ContractError;
 use crate::helpers::{map_validate, ExpiryRange};
 use crate::msg::{
     AskHookMsg, BidHookMsg, ExecuteMsg, HookAction, InstantiateMsg,
-    SaleHookMsg, NftInfoResponse, Metadata
+    SaleHookMsg, NftInfoResponse, Metadata, CreateCollectionQueryMsg, MigrateMsg
 };
 use crate::query::query_all_bids;
 use crate::state::{
-    ask_key, asks, bid_key, bids, Ask, Bid, Order, SaleType, SudoParams, TokenId, ASK_HOOKS, BID_HOOKS, SALE_HOOKS,
+    ask_key, asks, bid_key, bids, Ask, Bid, OrderExpire, SaleType, SudoParams, TokenId, ASK_HOOKS, BID_HOOKS, SALE_HOOKS,
     SUDO_PARAMS
 };
 
@@ -14,17 +14,16 @@ use crate::state::{
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
     coin, to_binary, Addr, BankMsg, Coin, Decimal, Deps, DepsMut, Empty, Env, Event, MessageInfo,
-    Reply, StdError, StdResult, Storage,  Uint128, WasmMsg, Response, SubMsg, from_binary
+    Reply, StdError, StdResult, Storage,  Uint128, WasmMsg, Response, SubMsg, from_binary, CosmosMsg
 };
-use cw2::set_contract_version;
+use cw2::{set_contract_version,get_contract_version};
 use cw721_base::ExecuteMsg as Cw721ExecuteMsg;
 use cw721_base::QueryMsg as Cw721QueryMsg;
 use cw721_base::CollectionInfoResponse;
 use cw721::{Cw721ReceiveMsg};
-use cw_storage_plus::Item;
+
 use cw_utils::{may_pay, must_pay, nonpayable, Duration};
 use schemars::JsonSchema;
-use semver::Version;
 use serde::{Deserialize, Serialize};
 // use sg1::fair_burn;
 
@@ -46,6 +45,8 @@ pub fn instantiate(
     msg.ask_expiry.validate()?;
     msg.bid_expiry.validate()?;
 
+    deps.api.addr_validate(&msg.create_collection_address)?;
+
     let params = SudoParams {
         // trading_fee_percent: Decimal::percent(msg.trading_fee_bps),
         ask_expiry: msg.ask_expiry,
@@ -54,6 +55,7 @@ pub fn instantiate(
         // max_finders_fee_percent: Decimal::percent(msg.max_finders_fee_bps),
         min_price: msg.min_price,
         listing_fee: msg.listing_fee,
+        create_collection_address: msg.create_collection_address
     };
     SUDO_PARAMS.save(deps.storage, &params)?;
 
@@ -149,6 +151,8 @@ pub fn execute_set_ask(
 ) -> Result<Response, ContractError> {
     let ask_info: AskInfo = from_binary(&rcv_msg.msg)?;
     let collection_address = info.clone().sender;
+
+    let params = SUDO_PARAMS.load(deps.storage)?;
     
     let AskInfo {
         sale_type,
@@ -163,8 +167,16 @@ pub fn execute_set_ask(
         return Err(ContractError::IdMismatch{});
     }
 
-    if ask_info.collection != collection_address {
+    if ask_info.collection != collection_address.clone() {
         return Err(ContractError::CollectionMismatch{} );
+    }
+
+    let is_exist: bool = deps
+        .querier
+        .query_wasm_smart(params.create_collection_address, &CreateCollectionQueryMsg::CheckCollection { address: collection_address.to_string()  })?;
+
+    if is_exist != true{
+        return Err(ContractError::ContractNotFound{})
     }
 
     price_validate(deps.storage, &price)?;
@@ -232,12 +244,10 @@ pub fn execute_remove_ask(
 
     let owner = ask.clone().seller;
     only_owner_nft(&info, owner)?;
-    
-    if ask.sale_type == SaleType::Auction {
-        return Err(ContractError::AuctionNotRemove {});
-    }
-    
+
     asks().remove(deps.storage, key)?;
+
+    let mut messages : Vec<CosmosMsg> = Vec::new();
 
     let cw721_transfer_msg = Cw721ExecuteMsg::<Metadata>::TransferNft {
         token_id: ask.token_id.to_string(),
@@ -250,10 +260,23 @@ pub fn execute_remove_ask(
         funds: vec![],
     };
 
+    messages.push(CosmosMsg::Wasm(exec_cw721_transfer));
+
+    if ask.max_bidder != Some(env.contract.address) {
+        let send_msg= CosmosMsg::Bank(BankMsg::Send{
+            to_address: ask.clone().max_bidder.unwrap().to_string(),
+            amount: vec![Coin{denom:NATIVE_DENOM.to_string(), amount: ask.clone().max_bid.unwrap() }]
+        });
+        messages.push(send_msg);
+
+        let bid_key = bid_key(&ask.collection, &ask.token_id, &ask.clone().max_bidder.unwrap());
+        bids().remove(deps.storage, bid_key)?;
+    }
+
     let hook = prepare_ask_hook(deps.as_ref(), &ask, HookAction::Delete)?;
 
     Ok(Response::new()
-        .add_message(exec_cw721_transfer)
+        .add_messages(messages)
         .add_submessages(hook)
         .add_attribute("human_action", "human_marketplace_remove_ask")
         .add_attribute("collection", collection.to_string())
@@ -794,58 +817,13 @@ fn prepare_bid_hook(deps: Deps, bid: &Bid, action: HookAction) -> StdResult<Vec<
 }
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn migrate(deps: DepsMut, _env: Env, _msg: Empty) -> Result<Response, ContractError> {
-    let current_version = cw2::get_contract_version(deps.storage)?;
-    if current_version.contract != CONTRACT_NAME {
-        return Err(StdError::generic_err("Cannot upgrade to a different contract").into());
+pub fn migrate(deps: DepsMut, _env: Env, _msg: MigrateMsg) -> Result<Response, ContractError> {
+    let version = get_contract_version(deps.storage)?;
+    if version.contract != CONTRACT_NAME {
+        return Err(ContractError::CannotMigrate {
+            previous_contract: version.contract,
+        });
     }
-    let version: Version = current_version
-        .version
-        .parse()
-        .map_err(|_| StdError::generic_err("Invalid contract version"))?;
-    let new_version: Version = CONTRACT_VERSION
-        .parse()
-        .map_err(|_| StdError::generic_err("Invalid contract version"))?;
-
-    if version > new_version {
-        return Err(StdError::generic_err("Cannot upgrade to a previous contract version").into());
-    }
-    // if same version return
-    if version == new_version {
-        return Ok(Response::new());
-    }
-
-    // SudoParamsV015 represents the previous state from v0.15.0 version
-    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema)]
-    pub struct SudoParamsV015 {
-        // pub trading_fee_percent: Decimal,
-        pub ask_expiry: ExpiryRange,
-        pub bid_expiry: ExpiryRange,
-        pub operators: Vec<Addr>,
-        // pub max_finders_fee_percent: Decimal,
-        pub min_price: Uint128,
-        pub stale_bid_duration: Duration,
-        pub bid_removal_reward_percent: Decimal,
-    }
-
-    // load state that contains the old struct type
-    let params_item: Item<SudoParamsV015> = Item::new("sudo-params");
-    let current_params = params_item.load(deps.storage)?;
-
-    // migrate to the new struct
-    let new_sudo_params = SudoParams {
-        // trading_fee_percent: current_params.trading_fee_percent,
-        ask_expiry: current_params.ask_expiry,
-        bid_expiry: current_params.bid_expiry,
-        operators: current_params.operators,
-        // max_finders_fee_percent: current_params.max_finders_fee_percent,
-        min_price: current_params.min_price,
-        listing_fee: Uint128::zero(),
-    };
-    // store migrated params
-    SUDO_PARAMS.save(deps.storage, &new_sudo_params)?;
-
-    // set new contract version
-    set_contract_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
-    Ok(Response::new())
+    Ok(Response::default())
 }
+

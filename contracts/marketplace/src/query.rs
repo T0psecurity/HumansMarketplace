@@ -1,11 +1,11 @@
 use crate::msg::{
     AskCountResponse, AskOffset, AskResponse, AsksResponse, BidOffset, BidResponse, Bidder,
-    BidsResponse, Collection, CollectionOffset, CollectionsResponse, ParamsResponse, QueryMsg, AskOffsetBidCount, AskOffsetSellPrice,
+    BidsResponse, Collection, CollectionOffset, CollectionsResponse, ParamsResponse, QueryMsg, AskOffsetBidCount, AskOffsetSellPrice, AsksOffsetExpiration,
 };
 use crate::state::{
-    ask_key, asks, bid_key, bids, BidKey, TokenId, ASK_HOOKS, BID_HOOKS, SALE_HOOKS, SUDO_PARAMS,
+    ask_key, asks, bid_key, bids, BidKey, TokenId, ASK_HOOKS, BID_HOOKS, SALE_HOOKS, SUDO_PARAMS, Ask,OrderExpire 
 };
-use cosmwasm_std::{entry_point, to_binary, Addr, Binary, Deps, Env, Order, StdResult};
+use cosmwasm_std::{entry_point, to_binary, Addr, Binary, Deps, Env, Order, StdResult,  Uint128, StdError};
 use cw_storage_plus::{Bound, PrefixBound};
 use cw_utils::maybe_addr;
 
@@ -14,7 +14,7 @@ const DEFAULT_QUERY_LIMIT: u32 = 10;
 const MAX_QUERY_LIMIT: u32 = 100;
 
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
+pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
     let api = deps.api;
 
     match msg {
@@ -85,11 +85,10 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
             to_binary(&query_asks_by_bid_count(deps, start_after, limit )?)
         }
         ,
-        QueryMsg::ReverseAsksSortedByBidCount { 
-            start_after, 
+        QueryMsg::AsksSortedByExpiration { 
             limit 
         } => {
-            to_binary(&query_reverse_asks_by_bid_count(deps, start_after, limit)?)
+            to_binary(&query_asks_sorted_by_expiration(deps, env,  limit)?)   
         }
         ,
         QueryMsg::AsksSortedByContentType { 
@@ -394,26 +393,45 @@ pub fn query_asks_by_bid_count(
 }
 
 
-pub fn query_reverse_asks_by_bid_count(
+pub fn query_asks_sorted_by_expiration(
     deps: Deps, 
-    start_after: Option<AskOffsetBidCount>, 
+    env: Env,
     limit: Option<u32> 
 ) -> StdResult<AsksResponse> {
     let limit = limit.unwrap_or(DEFAULT_QUERY_LIMIT).min(MAX_QUERY_LIMIT) as usize;
-
-    let start = start_after.map(|offset| {
-        Bound::exclusive((offset.bid_count.u128() , ask_key(&deps.api.addr_validate(&offset.collection).unwrap(), &offset.token_id)))
-    });
-
+   
     let asks = asks()
         .idx
-        .bid_count
-        .range(deps.storage, start, None, Order::Ascending)
-        .take(limit)
+        .expiration
+        .range(deps.storage, None, None, Order::Ascending)
         .map(|res| res.map(|item| item.1))
+        .filter(|item| filter_expire(env.clone(), item).unwrap() )
         .collect::<StdResult<Vec<_>>>()?;
 
-    Ok(AsksResponse { asks })
+    if asks.len() < limit {
+         Ok(AsksResponse { asks })
+    }
+    else{
+        let mut result :Vec<Ask> = Vec::new();
+        for i in 0..limit {
+            result.push(asks[i].clone());
+        }
+        Ok(AsksResponse { asks: result })
+    }
+   
+}
+
+pub fn filter_expire(
+    env: Env,
+    ask: &StdResult<Ask>
+) -> StdResult<bool>  {
+    let ask = ask.as_ref().unwrap();
+    if ask.is_expired(&env.block){
+        Ok(false)
+    }
+    else {
+        Ok(true)
+    }
 }
 
 pub fn query_asks_by_sell_price(

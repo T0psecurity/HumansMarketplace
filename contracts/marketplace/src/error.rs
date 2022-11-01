@@ -98,5 +98,11 @@ pub enum ContractError {
     CollectionMismatch{},
 
     #[error("auction cannot remove")]
-    AuctionNotRemove {}
+    AuctionNotRemove {},
+    
+    #[error("contract not found")]
+    ContractNotFound {},
+    
+    #[error("Cannot migrate from different contract type: {previous_contract}")]
+    CannotMigrate { previous_contract: String },
 }

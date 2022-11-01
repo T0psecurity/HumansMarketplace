@@ -25,6 +25,8 @@ pub struct SudoParams {
     pub min_price: Uint128,
     /// Listing fee to reduce spam
     pub listing_fee: Uint128,
+
+    pub create_collection_address: String
 }
 
 pub const SUDO_PARAMS: Item<SudoParams> = Item::new("sudo-params");
@@ -36,7 +38,7 @@ pub const COLLECTION_BID_HOOKS: Hooks = Hooks::new("collection-bid-hooks");
 
 pub type TokenId = String;
 
-pub trait Order {
+pub trait OrderExpire {
     fn expires_at(&self) -> Timestamp;
 
     fn is_expired(&self, block: &BlockInfo) -> bool {
@@ -68,7 +70,7 @@ pub struct Ask {
     pub content_type: String
 }
 
-impl Order for Ask {
+impl OrderExpire for Ask {
     fn expires_at(&self) -> Timestamp {
         self.expires_at
     }
@@ -88,12 +90,13 @@ pub struct AskIndicies<'a> {
     pub seller: MultiIndex<'a, Addr, Ask, AskKey>,
     pub bid_count: MultiIndex<'a, u128, Ask, AskKey>,
     pub content_type: MultiIndex<'a, String, Ask, AskKey>,
-    pub price: MultiIndex<'a, u128, Ask, AskKey>
+    pub price: MultiIndex<'a, u128, Ask, AskKey>,
+    pub expiration: MultiIndex<'a, u64, Ask, AskKey>
 }
 
 impl<'a> IndexList<Ask> for AskIndicies<'a> {
     fn get_indexes(&'_ self) -> Box<dyn Iterator<Item = &'_ dyn Index<Ask>> + '_> {
-        let v: Vec<&dyn Index<Ask>> = vec![&self.collection, &self.collection_price, &self.seller, &self.bid_count, &self.content_type, &self.price];
+        let v: Vec<&dyn Index<Ask>> = vec![&self.collection, &self.collection_price, &self.seller, &self.bid_count, &self.content_type, &self.price, &self.expiration];
         Box::new(v.into_iter())
     }
 }
@@ -109,7 +112,8 @@ pub fn asks<'a>() -> IndexedMap<'a, AskKey, Ask, AskIndicies<'a>> {
         seller: MultiIndex::new(|d: &Ask| d.seller.clone(), "asks", "asks__seller"),
         bid_count: MultiIndex::new(|d: &Ask| d.bid_count.u128() , "asks", "bids_count"),
         content_type: MultiIndex::new(|d: &Ask| d.content_type.clone() , "asks", "content_type"),
-        price: MultiIndex::new(|d: &Ask| d.price.u128() , "asks", "asks__price")
+        price: MultiIndex::new(|d: &Ask| d.price.u128() , "asks", "asks__price"),
+        expiration: MultiIndex::new(|d: &Ask| d.expires_at.seconds() , "asks", "asks__expiration")
     };
     IndexedMap::new("asks", indexes)
 }
@@ -201,7 +205,7 @@ pub struct CollectionBid {
     pub expires_at: Timestamp,
 }
 
-impl Order for CollectionBid {
+impl OrderExpire for CollectionBid {
     fn expires_at(&self) -> Timestamp {
         self.expires_at
     }

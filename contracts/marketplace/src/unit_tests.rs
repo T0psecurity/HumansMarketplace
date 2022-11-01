@@ -2,7 +2,7 @@ use crate::execute::AskInfo;
 #[cfg(test)]
 use crate::execute::{execute, instantiate};
 use crate::msg::{ExecuteMsg, InstantiateMsg, };
-use crate::query::{ query_ask,  query_bids, query_asks_by_bid_count, query_all_bids};
+use crate::query::{ query_ask,  query_bids, query_asks_by_bid_count, query_all_bids, query_asks_sorted_by_expiration};
 use crate::state:: SaleType;
 use crate::helpers::ExpiryRange;
 
@@ -37,6 +37,8 @@ fn setup_contract(deps: DepsMut){
         min_price: Uint128::new(10),
         /// Listing fee to reduce spam
         listing_fee: Uint128::zero(),
+
+        create_collection_address: "create_collection_address".to_string()
     };
     let info = mock_info("owner", &[]);
     let res = instantiate(deps, mock_env(), info, instantiate_msg).unwrap();
@@ -73,6 +75,7 @@ fn init_contract() {
         min_price: Uint128::new(10),
         /// Listing fee to reduce spam
         listing_fee: Uint128::zero(),
+        create_collection_address: "create_collection_address".to_string()
     };
     let info = mock_info("owner", &[]);
     let res = instantiate(deps.as_mut(), mock_env(), info, instantiate_msg).unwrap();
@@ -255,7 +258,122 @@ fn test_accept_bid_without_bid(){
 }
 
 
+#[test]
+fn test_asks_sort_by_expiration(){
+  let mut deps = mock_dependencies();
+  let mut env = mock_env();
+  setup_contract(deps.as_mut());
 
+  let sell_msg = AskInfo{
+    sale_type: SaleType::Auction,
+    collection: Addr::unchecked("collection1".to_string()),
+    token_id: "Test.1".to_string(),
+    price: Coin { denom: "uheart".to_string(), amount: Uint128::new(300) },
+    funds_recipient: None,
+    expires: 150,
+  };
+
+  let info = mock_info("collection1", &[]);
+  let msg = ExecuteMsg::ReceiveNft(Cw721ReceiveMsg{
+      sender: "seller1".to_string(),
+      token_id: "Test.1".to_string(),
+      msg:to_binary(&sell_msg).unwrap()
+  });
+  execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+
+  let sell_msg = AskInfo{
+    sale_type: SaleType::Auction,
+    collection: Addr::unchecked("collection2".to_string()),
+    token_id: "Test.2".to_string(),
+    price: Coin { denom: "uheart".to_string(), amount: Uint128::new(300) },
+    funds_recipient: None,
+    expires: 300,
+  };
+
+  let info = mock_info("collection2", &[]);
+  let msg = ExecuteMsg::ReceiveNft(Cw721ReceiveMsg{
+      sender: "seller2".to_string(),
+      token_id: "Test.2".to_string(),
+      msg:to_binary(&sell_msg).unwrap()
+  });
+  execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+
+ let sell_msg = AskInfo{
+    sale_type: SaleType::Auction,
+    collection: Addr::unchecked("collection3".to_string()),
+    token_id: "Test.3".to_string(),
+    price: Coin { denom: "uheart".to_string(), amount: Uint128::new(300) },
+    funds_recipient: None,
+    expires: 200,
+  };
+
+  let info = mock_info("collection3", &[]);
+  let msg = ExecuteMsg::ReceiveNft(Cw721ReceiveMsg{
+      sender: "seller3".to_string(),
+      token_id: "Test.3".to_string(),
+      msg:to_binary(&sell_msg).unwrap()
+  });
+  execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+
+  env.block.time = env.block.time.plus_seconds(170);
+
+  let asks = query_asks_sorted_by_expiration(deps.as_ref(), env.clone(), Some(1)).unwrap();
+  println!("asks {:?}", asks)
+}
+
+
+#[test]
+fn test_remove_ask() {
+  let mut deps = mock_dependencies();
+  let mut env = mock_env();
+  setup_contract(deps.as_mut());
+
+  let sell_msg = AskInfo{
+    sale_type: SaleType::Auction,
+    collection: Addr::unchecked("collection1".to_string()),
+    token_id: "Test.1".to_string(),
+    price: Coin { denom: "uheart".to_string(), amount: Uint128::new(300) },
+    funds_recipient: None,
+    expires: 300,
+  };
+
+  let info = mock_info("collection1", &[]);
+  let msg = ExecuteMsg::ReceiveNft(Cw721ReceiveMsg{
+      sender: "seller1".to_string(),
+      token_id: "Test.1".to_string(),
+      msg:to_binary(&sell_msg).unwrap()
+  });
+  execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+
+  let info = mock_info("bider1", &[Coin{
+      denom: "uheart".to_string(),
+      amount: Uint128::new(350)
+  }]);
+  let msg = ExecuteMsg::SetBid { collection: "collection1".to_string(), token_id: "Test.1".to_string() };
+  execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+
+  let info = mock_info("seller1", &[]);
+  let msg = ExecuteMsg::RemoveAsk { collection: "collection1".to_string(), token_id: "Test.1".to_string() };
+  let res = execute(deps.as_mut(), env.clone(), info.clone(), msg).unwrap();
+
+  assert_eq!(res.messages.len(), 2);
+  assert_eq!(res.messages[0].msg, CosmosMsg::Wasm(WasmMsg::Execute{
+    contract_addr: "collection1".to_string(),
+    msg: to_binary(&Cw721ExecuteMsg::TransferNft{
+      recipient: "seller1".to_string(),
+      token_id: "Test.1".to_string()
+    }).unwrap(),  
+    funds: vec![]
+  }));
+
+  assert_eq!(res.messages[1].msg, CosmosMsg::Bank(BankMsg::Send { to_address: "bider1".to_string(), amount: vec![Coin{
+      denom: "uheart".to_string(),
+      amount: Uint128::new(350)
+  }] }));
+
+  let bid = query_bids(deps.as_ref(), Addr::unchecked("collection1"), "Test.1".to_string(), None, None).unwrap();
+  println!("bid {:?}", bid)
+}
 
 #[test]
 fn test_remove_bids(){
@@ -302,37 +420,40 @@ fn test_remove_bids(){
   let all_bids = query_all_bids(deps.as_ref(), Addr::unchecked("collection1") , "Test.1".to_string()).unwrap();
   println!("all bids {:?}", all_bids);
 
-  env.block.time = env.block.time.plus_seconds(350);
+  let ask = query_ask(deps.as_ref(), Addr::unchecked("collection1"), "Test.1".to_string()).unwrap();
+  println!("{:?}",ask)
 
-  let info = mock_info("seller1", &[]);
-  let msg = ExecuteMsg::AcceptBid { collection: "collection1".to_string(), token_id: "Test.1".to_string() };
-  let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
+  // env.block.time = env.block.time.plus_seconds(350);
 
-  println!("compare bids messges length{:?}", res.messages.len());
-  assert_eq!(res.messages.len(), 4);
-  assert_eq!(res.messages[0].msg, CosmosMsg::Bank(BankMsg::Send{
-    to_address: "owner1".to_string(),
-    amount: vec![Coin{
-      denom: "uheart".to_string(),
-      amount: Uint128::new(40)
-    }]
-  }));
-  assert_eq!(res.messages[1].msg, CosmosMsg::Bank(BankMsg::Send{
-    to_address: "seller1".to_string(),
-    amount: vec![Coin{
-      denom: "uheart".to_string(),
-      amount: Uint128::new(360)
-    }]
-  }));
-  assert_eq!(res.messages[2].msg, CosmosMsg::Wasm(WasmMsg::Execute{
-    contract_addr: "collection1".to_string(),
-    msg: to_binary(&Cw721ExecuteMsg::TransferNft{
-      recipient: "bider2".to_string(),
-      token_id: "Test.1".to_string()
-    }).unwrap(),
-    funds: vec![]
-  }));
+  // let info = mock_info("seller1", &[]);
+  // let msg = ExecuteMsg::AcceptBid { collection: "collection1".to_string(), token_id: "Test.1".to_string() };
+  // let res = execute(deps.as_mut(), env.clone(), info, msg).unwrap();
 
-  let all_bids = query_all_bids(deps.as_ref(), Addr::unchecked("collection1") , "Test.1".to_string()).unwrap();
-  println!("all bids after accept the max bid {:?}", all_bids);
+  // println!("compare bids messges length{:?}", res.messages.len());
+  // assert_eq!(res.messages.len(), 4);
+  // assert_eq!(res.messages[0].msg, CosmosMsg::Bank(BankMsg::Send{
+  //   to_address: "owner1".to_string(),
+  //   amount: vec![Coin{
+  //     denom: "uheart".to_string(),
+  //     amount: Uint128::new(40)
+  //   }]
+  // }));
+  // assert_eq!(res.messages[1].msg, CosmosMsg::Bank(BankMsg::Send{
+  //   to_address: "seller1".to_string(),
+  //   amount: vec![Coin{
+  //     denom: "uheart".to_string(),
+  //     amount: Uint128::new(360)
+  //   }]
+  // }));
+  // assert_eq!(res.messages[2].msg, CosmosMsg::Wasm(WasmMsg::Execute{
+  //   contract_addr: "collection1".to_string(),
+  //   msg: to_binary(&Cw721ExecuteMsg::TransferNft{
+  //     recipient: "bider2".to_string(),
+  //     token_id: "Test.1".to_string()
+  //   }).unwrap(),
+  //   funds: vec![]
+  // }));
+
+  // let all_bids = query_all_bids(deps.as_ref(), Addr::unchecked("collection1") , "Test.1".to_string()).unwrap();
+  // println!("all bids after accept the max bid {:?}", all_bids);
 }
